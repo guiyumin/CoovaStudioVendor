@@ -10,7 +10,7 @@ jobs:
     runs-on: macos-latest # Apple silicon
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install build tools
         run: |
@@ -18,7 +18,7 @@ jobs:
           command -v pkg-config >/dev/null || brew install pkgconf
 
       - name: Cache source downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: work/ffmpeg/downloads
           key: ffmpeg-sources-${{ hashFiles('ffmpeg/build.sh') }}
@@ -27,7 +27,7 @@ jobs:
         run: ffmpeg/build.sh
 
       - name: Upload build output
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ffmpeg-macos-arm64
           path: dist/ffmpeg
