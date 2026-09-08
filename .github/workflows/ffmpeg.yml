@@ -8,6 +8,8 @@ on:
 jobs:
   macos-arm64:
     runs-on: macos-latest # Apple silicon
+    permissions:
+      contents: write # gh release create needs it; the default token is read-only
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
