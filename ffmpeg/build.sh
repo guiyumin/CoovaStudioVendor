@@ -299,17 +299,18 @@ $bad"
     printf '  %s %s, %s dynamic libraries, all from macOS\n' "$bin" \
       "$("$OUT/bin/$bin" -version | head -1 | cut -d' ' -f3)" "$(printf '%s\n' "$deps" | wc -l | tr -d ' ')"
   done
-  local encoders decoders e d
+  local encoders decoders x265 e d
   encoders=$("$OUT/bin/ffmpeg" -hide_banner -encoders 2>/dev/null)
   decoders=$("$OUT/bin/ffmpeg" -hide_banner -decoders 2>/dev/null)
+  x265=$("$OUT/bin/ffmpeg" -hide_banner -h encoder=libx265 2>/dev/null)
+  # Here-strings, not pipes: with pipefail, grep -q leaving early would fail the writer.
   for e in libx264 libx265 libvpx libvpx-vp9 libsvtav1 libopus libvorbis libmp3lame aac h264_videotoolbox hevc_videotoolbox; do
-    printf '%s\n' "$encoders" | grep -qw "$e" || die "encoder $e is missing"
+    grep -qw -- "$e" <<<"$encoders" || die "encoder $e is missing"
   done
   for d in libdav1d h264 hevc vp9 aac mp3 opus vorbis; do
-    printf '%s\n' "$decoders" | grep -qw "$d" || die "decoder $d is missing"
+    grep -qw -- "$d" <<<"$decoders" || die "decoder $d is missing"
   done
-  "$OUT/bin/ffmpeg" -hide_banner -h encoder=libx265 2>/dev/null | grep -q 'yuv420p10le.*yuv420p12le' \
-    || die "libx265 takes no 10- and 12-bit pictures"
+  grep -q 'yuv420p10le.*yuv420p12le' <<<"$x265" || die "libx265 takes no 10- and 12-bit pictures"
   echo "  all expected encoders and decoders present"
   # Smoke test: one second of test video + tone through x264/aac, probe it, then x265 (8, 10 and
   # 12 bits), vp9, av1, mp3 and opus.
