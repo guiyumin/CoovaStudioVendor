@@ -21,7 +21,8 @@ from upstream sources.
 - GPL build (x264 and x265 included), with no nonfree components (no fdk-aac).
 
 The first version includes x264, x265 (8-bit), libvpx, dav1d, opus, libogg + libvorbis and lame;
-SVT-AV1 (AV1 encoding) joined in `ffmpeg-9.0.1-2`.
+SVT-AV1 (AV1 encoding) joined in `ffmpeg-9.0.1-2`, and since `ffmpeg-9.0.1-3` x265 encodes 8, 10
+and 12 bits (one library built three times, x265's multilib recipe).
 Hardware encoding and decoding use the system's VideoToolbox; AAC uses ffmpeg's built-in encoder.
 
 ### Building locally

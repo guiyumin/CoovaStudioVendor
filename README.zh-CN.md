@@ -17,7 +17,8 @@ App 仓库只下载这里发布的二进制，不依赖用户机器上的任何�
 - GPL 构建（含 x264、x265），不含任何 nonfree 组件（没有 fdk-aac）。
 
 第一版包含：x264、x265（8-bit）、libvpx、dav1d、opus、libogg + libvorbis、lame；
-`ffmpeg-9.0.1-2` 起加入 SVT-AV1（AV1 编码）。
+`ffmpeg-9.0.1-2` 起加入 SVT-AV1（AV1 编码）；`ffmpeg-9.0.1-3` 起 x265 能编 8、10、12 bit
+（按 x265 的 multilib 做法，同一个库编三遍再合成一个）。
 硬件编解码走系统 VideoToolbox，AAC 用 ffmpeg 内置编码器。
 
 ### 本地构建

@@ -192,15 +192,30 @@ build_x264() {
 
 build_x265() {
   cd "$SRC/x265"
-  # 8-bit only for now; 10/12-bit needs x265's three-way multilib build.
-  cmake -S source -B build -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-    -DCMAKE_OSX_ARCHITECTURES="$ARCH" -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOS_MIN" \
-    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-    -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_PIC=ON \
+  # 8, 10 and 12 bits in one library, x265's own multilib recipe (build/linux/multilib.sh): the
+  # 10- and 12-bit encoders are built without the public API and linked into the 8-bit one, which
+  # picks by the bit depth asked for. Neon, DotProd and I8MM are chosen at run time; no SVE.
+  local common=(
+    -G Ninja -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_OSX_ARCHITECTURES="$ARCH" -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOS_MIN"
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DENABLE_PIC=ON
     -DENABLE_SVE=OFF -DENABLE_SVE2=OFF
+  )
+  rm -rf build build-10 build-12
+  cmake -S source -B build-12 "${common[@]}" -DHIGH_BIT_DEPTH=ON -DMAIN12=ON -DEXPORT_C_API=OFF
+  ninja -C build-12
+  cmake -S source -B build-10 "${common[@]}" -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF
+  ninja -C build-10
+  mkdir -p build
+  cp build-10/libx265.a build/libx265_main10.a
+  cp build-12/libx265.a build/libx265_main12.a
+  cmake -S source -B build "${common[@]}" -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+    -DEXTRA_LIB="x265_main10.a;x265_main12.a" -DEXTRA_LINK_FLAGS=-L. -DLINKED_10BIT=ON -DLINKED_12BIT=ON
   ninja -C build
   ninja -C build install
+  # The installed library becomes all three together.
+  libtool -static -o "$PREFIX/lib/libx265.a" build/libx265.a build/libx265_main10.a build/libx265_main12.a
 }
 
 build_libvpx() {
@@ -294,14 +309,19 @@ $bad"
   for d in libdav1d h264 hevc vp9 aac mp3 opus vorbis; do
     printf '%s\n' "$decoders" | grep -qw "$d" || die "decoder $d is missing"
   done
+  "$OUT/bin/ffmpeg" -hide_banner -h encoder=libx265 2>/dev/null | grep -q 'yuv420p10le.*yuv420p12le' \
+    || die "libx265 takes no 10- and 12-bit pictures"
   echo "  all expected encoders and decoders present"
-  # Smoke test: one second of test video + tone through x264/aac, probe it, then x265, vp9 and av1.
+  # Smoke test: one second of test video + tone through x264/aac, probe it, then x265 (8, 10 and
+  # 12 bits), vp9 and av1.
   tmp=$(mktemp -d)
   "$OUT/bin/ffmpeg" -hide_banner -loglevel error -y \
     -f lavfi -i testsrc2=size=320x240:rate=30:duration=1 -f lavfi -i sine=frequency=440:duration=1 \
     -c:v libx264 -preset ultrafast -c:a aac "$tmp/test.mp4"
   printf '  probe: %s\n' "$("$OUT/bin/ffprobe" -v error -show_entries stream=codec_name -of csv=p=0 "$tmp/test.mp4" | tr '\n' ' ')"
   "$OUT/bin/ffmpeg" -hide_banner -loglevel error -i "$tmp/test.mp4" -c:v libx265 -preset ultrafast -f null -
+  "$OUT/bin/ffmpeg" -hide_banner -loglevel error -i "$tmp/test.mp4" -c:v libx265 -preset ultrafast -pix_fmt yuv420p10le -f null -
+  "$OUT/bin/ffmpeg" -hide_banner -loglevel error -i "$tmp/test.mp4" -c:v libx265 -preset ultrafast -pix_fmt yuv420p12le -f null -
   "$OUT/bin/ffmpeg" -hide_banner -loglevel error -i "$tmp/test.mp4" -c:v libvpx-vp9 -deadline realtime -f null -
   "$OUT/bin/ffmpeg" -hide_banner -loglevel error -i "$tmp/test.mp4" -c:v libsvtav1 -preset 12 -f null -
   rm -rf "$tmp"
@@ -316,7 +336,7 @@ license: GPL v2 or later (--enable-gpl; no nonfree components)
 
 libraries (all statically linked):
   x264     git $X264_COMMIT (stable branch)
-  x265     $X265_VERSION (8-bit)
+  x265     $X265_VERSION (8, 10 and 12-bit)
   libvpx   $LIBVPX_VERSION (git $LIBVPX_COMMIT)
   dav1d    $DAV1D_VERSION
   SVT-AV1  $SVTAV1_VERSION (git $SVTAV1_COMMIT)
@@ -359,7 +379,7 @@ for step in ${*:-$ALL_STEPS}; do
   case $step in
     fetch)   step_fetch ;;
     x264)    lib x264   "$X264_COMMIT"    build_x264 ;;
-    x265)    lib x265   "$X265_VERSION"   build_x265 ;;
+    x265)    lib x265   "$X265_VERSION-multilib" build_x265 ;;
     libvpx)  lib libvpx "$LIBVPX_VERSION" build_libvpx ;;
     dav1d)   lib dav1d  "$DAV1D_VERSION"  build_dav1d ;;
     svtav1)  lib svtav1 "$SVTAV1_VERSION" build_svtav1 ;;
