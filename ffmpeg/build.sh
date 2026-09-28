@@ -9,9 +9,9 @@
 set -euo pipefail
 
 # ---- pinned versions ------------------------------------------------------------------
-FFMPEG_VERSION="9.0.1"
+FFMPEG_VERSION="9.0.2"
 FFMPEG_URL="https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
-FFMPEG_SHA256="cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635"
+FFMPEG_SHA256="8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e" # signed by the FFmpeg release key FCF986EA15E6E293A5644F10B4322F04D67658D8
 
 X264_GIT="https://code.videolan.org/videolan/x264.git"
 X264_COMMIT="b35605ace3ddf7c1a5d67a2eb553f034aef41d55" # head of the "stable" branch, 2026-09-07
@@ -44,9 +44,9 @@ VORBIS_VERSION="1.3.7"
 VORBIS_URL="https://downloads.xiph.org/releases/vorbis/libvorbis-$VORBIS_VERSION.tar.xz"
 VORBIS_SHA256="b33cc4934322bcbf6efcbacf49e3ca01aadbea4114ec9589d1b1e9d20f72954b"
 
-LAME_VERSION="3.100"
+LAME_VERSION="4.0"
 LAME_URL="https://downloads.sourceforge.net/project/lame/lame/$LAME_VERSION/lame-$LAME_VERSION.tar.gz"
-LAME_SHA256="ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e"
+LAME_SHA256="3df5124d5ad3a98312ffd7ba6a9b36230e4f8a3e66d3ce0f425e336c32d216eb"
 
 MACOS_MIN="12.0" # oldest macOS the binaries run on; keep in sync with the app's LSMinimumSystemVersion
 ARCH="arm64"
@@ -274,8 +274,7 @@ build_opus() {
 
 build_lame() {
   cd "$SRC/lame"
-  # The export list names lame_init_old, which no longer exists; it breaks the link on macOS.
-  sed -i '' '/lame_init_old/d' include/libmp3lame.sym
+  # Encoder only: the decoder would want libmpg123 since LAME 3.101.
   ./configure --prefix="$PREFIX" --disable-shared --enable-static --disable-frontend --disable-gtktest --disable-decoder
   make -j"$JOBS"
   make install
@@ -313,7 +312,7 @@ $bad"
     || die "libx265 takes no 10- and 12-bit pictures"
   echo "  all expected encoders and decoders present"
   # Smoke test: one second of test video + tone through x264/aac, probe it, then x265 (8, 10 and
-  # 12 bits), vp9 and av1.
+  # 12 bits), vp9, av1, mp3 and opus.
   tmp=$(mktemp -d)
   "$OUT/bin/ffmpeg" -hide_banner -loglevel error -y \
     -f lavfi -i testsrc2=size=320x240:rate=30:duration=1 -f lavfi -i sine=frequency=440:duration=1 \
@@ -324,6 +323,8 @@ $bad"
   "$OUT/bin/ffmpeg" -hide_banner -loglevel error -i "$tmp/test.mp4" -c:v libx265 -preset ultrafast -pix_fmt yuv420p12le -f null -
   "$OUT/bin/ffmpeg" -hide_banner -loglevel error -i "$tmp/test.mp4" -c:v libvpx-vp9 -deadline realtime -f null -
   "$OUT/bin/ffmpeg" -hide_banner -loglevel error -i "$tmp/test.mp4" -c:v libsvtav1 -preset 12 -f null -
+  "$OUT/bin/ffmpeg" -hide_banner -loglevel error -i "$tmp/test.mp4" -c:a libmp3lame -f null -
+  "$OUT/bin/ffmpeg" -hide_banner -loglevel error -i "$tmp/test.mp4" -c:a libopus -f null -
   rm -rf "$tmp"
   echo "  smoke test passed"
 }
