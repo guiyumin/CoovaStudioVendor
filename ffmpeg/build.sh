@@ -2,7 +2,7 @@
 # Builds static ffmpeg + ffprobe for macOS (Apple silicon) from pinned upstream sources.
 #
 #   ffmpeg/build.sh          # everything: fetch, build every library, build ffmpeg, check, package
-#   ffmpeg/build.sh x265     # a single step: fetch x264 x265 libvpx dav1d ogg vorbis opus lame ffmpeg check package
+#   ffmpeg/build.sh x265     # a single step: fetch x264 x265 libvpx dav1d svtav1 ogg vorbis opus lame ffmpeg check package
 #
 # Output goes to dist/ffmpeg/ (see README.md); intermediate files live in work/ffmpeg/.
 # Everything below the "pinned versions" block is mechanism. To upgrade anything, only that block changes.
@@ -23,6 +23,10 @@ X265_SHA256="40b1ea0453e0309f0eba934e0ddf533f8f6295966679e8894e8f1c1c8d5e1210"
 LIBVPX_VERSION="1.17.0"
 LIBVPX_GIT="https://github.com/webmproject/libvpx.git"
 LIBVPX_COMMIT="6df3ec34557879fff673706f4a1d9fbd0f3a6f0e" # tag v1.17.0
+
+SVTAV1_VERSION="4.2.0"
+SVTAV1_GIT="https://gitlab.com/AOMediaCodec/SVT-AV1.git"
+SVTAV1_COMMIT="9292ec8e32bce26f781f277ec8739b53426c4300" # tag v4.2.0
 
 DAV1D_VERSION="1.5.4"
 DAV1D_URL="https://downloads.videolan.org/pub/videolan/dav1d/$DAV1D_VERSION/dav1d-$DAV1D_VERSION.tar.xz"
@@ -77,7 +81,7 @@ FFMPEG_CONFIGURE=(
   --extra-cflags="-I$PREFIX/include"
   --extra-ldflags="-L$PREFIX/lib"
   --extra-libs=-lc++ # x265 is C++
-  --enable-libx264 --enable-libx265 --enable-libvpx --enable-libdav1d
+  --enable-libx264 --enable-libx265 --enable-libvpx --enable-libdav1d --enable-libsvtav1
   --enable-libopus --enable-libvorbis --enable-libmp3lame
   --enable-videotoolbox --enable-audiotoolbox
   --disable-sdl2 --disable-ffplay --disable-doc --disable-debug
@@ -173,6 +177,7 @@ step_fetch() {
   extract "$(fetch_tarball "$LAME_URL" "$LAME_SHA256")" "$SRC/lame"
   fetch_git x264 "$X264_GIT" "$X264_COMMIT"
   fetch_git libvpx "$LIBVPX_GIT" "$LIBVPX_COMMIT"
+  fetch_git svtav1 "$SVTAV1_GIT" "$SVTAV1_COMMIT"
   log "all sources fetched and verified"
 }
 
@@ -212,6 +217,19 @@ build_dav1d() {
   cd "$SRC/dav1d"
   meson setup build --prefix="$PREFIX" --libdir=lib --buildtype=release --default-library=static \
     -Denable_tools=false -Denable_tests=false -Denable_examples=false
+  ninja -C build
+  ninja -C build install
+}
+
+build_svtav1() {
+  cd "$SRC/svtav1"
+  # AV1 encoding. Neon, DotProd and I8MM are picked at run time (sysctl), so M1 is safe; Apple
+  # silicon has no SVE, so that code is left out. No link-time optimisation in a static library.
+  cmake -S . -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
+    -DCMAKE_OSX_ARCHITECTURES="$ARCH" -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOS_MIN" \
+    -DBUILD_SHARED_LIBS=OFF -DBUILD_APPS=OFF -DBUILD_TESTING=OFF \
+    -DENABLE_SVE=OFF -DENABLE_SVE2=OFF -DSVT_AV1_LTO=OFF -DNATIVE=OFF -DEXCLUDE_HASH=ON
   ninja -C build
   ninja -C build install
 }
@@ -270,14 +288,14 @@ $bad"
   local encoders decoders e d
   encoders=$("$OUT/bin/ffmpeg" -hide_banner -encoders 2>/dev/null)
   decoders=$("$OUT/bin/ffmpeg" -hide_banner -decoders 2>/dev/null)
-  for e in libx264 libx265 libvpx libvpx-vp9 libopus libvorbis libmp3lame aac h264_videotoolbox hevc_videotoolbox; do
+  for e in libx264 libx265 libvpx libvpx-vp9 libsvtav1 libopus libvorbis libmp3lame aac h264_videotoolbox hevc_videotoolbox; do
     printf '%s\n' "$encoders" | grep -qw "$e" || die "encoder $e is missing"
   done
   for d in libdav1d h264 hevc vp9 aac mp3 opus vorbis; do
     printf '%s\n' "$decoders" | grep -qw "$d" || die "decoder $d is missing"
   done
   echo "  all expected encoders and decoders present"
-  # Smoke test: one second of test video + tone through x264/aac, probe it, then x265 and vp9.
+  # Smoke test: one second of test video + tone through x264/aac, probe it, then x265, vp9 and av1.
   tmp=$(mktemp -d)
   "$OUT/bin/ffmpeg" -hide_banner -loglevel error -y \
     -f lavfi -i testsrc2=size=320x240:rate=30:duration=1 -f lavfi -i sine=frequency=440:duration=1 \
@@ -285,6 +303,7 @@ $bad"
   printf '  probe: %s\n' "$("$OUT/bin/ffprobe" -v error -show_entries stream=codec_name -of csv=p=0 "$tmp/test.mp4" | tr '\n' ' ')"
   "$OUT/bin/ffmpeg" -hide_banner -loglevel error -i "$tmp/test.mp4" -c:v libx265 -preset ultrafast -f null -
   "$OUT/bin/ffmpeg" -hide_banner -loglevel error -i "$tmp/test.mp4" -c:v libvpx-vp9 -deadline realtime -f null -
+  "$OUT/bin/ffmpeg" -hide_banner -loglevel error -i "$tmp/test.mp4" -c:v libsvtav1 -preset 12 -f null -
   rm -rf "$tmp"
   echo "  smoke test passed"
 }
@@ -300,6 +319,7 @@ libraries (all statically linked):
   x265     $X265_VERSION (8-bit)
   libvpx   $LIBVPX_VERSION (git $LIBVPX_COMMIT)
   dav1d    $DAV1D_VERSION
+  SVT-AV1  $SVTAV1_VERSION (git $SVTAV1_COMMIT)
   opus     $OPUS_VERSION
   libogg   $OGG_VERSION
   libvorbis $VORBIS_VERSION
@@ -325,6 +345,7 @@ step_package() {
   done
   git -C "$SRC/x264" archive --format=tar.gz --prefix="x264-$X264_COMMIT/" -o "$DIST/sources/x264-$X264_COMMIT.tar.gz" HEAD
   git -C "$SRC/libvpx" archive --format=tar.gz --prefix="libvpx-$LIBVPX_VERSION/" -o "$DIST/sources/libvpx-$LIBVPX_VERSION.tar.gz" HEAD
+  git -C "$SRC/svtav1" archive --format=tar.gz --prefix="SVT-AV1-$SVTAV1_VERSION/" -o "$DIST/sources/SVT-AV1-$SVTAV1_VERSION.tar.gz" HEAD
   (cd "$DIST" && shasum -a 256 "$name.tar.gz" sources/* > SHA256SUMS)
   log "done: $DIST"
   ls -la "$DIST" | tail -n +2 | awk '{print "  " $NF, $5}'
@@ -333,7 +354,7 @@ step_package() {
 
 # ---- main --------------------------------------------------------------------------------
 
-ALL_STEPS="fetch x264 x265 libvpx dav1d ogg vorbis opus lame ffmpeg check package"
+ALL_STEPS="fetch x264 x265 libvpx dav1d svtav1 ogg vorbis opus lame ffmpeg check package"
 for step in ${*:-$ALL_STEPS}; do
   case $step in
     fetch)   step_fetch ;;
@@ -341,6 +362,7 @@ for step in ${*:-$ALL_STEPS}; do
     x265)    lib x265   "$X265_VERSION"   build_x265 ;;
     libvpx)  lib libvpx "$LIBVPX_VERSION" build_libvpx ;;
     dav1d)   lib dav1d  "$DAV1D_VERSION"  build_dav1d ;;
+    svtav1)  lib svtav1 "$SVTAV1_VERSION" build_svtav1 ;;
     ogg)     lib ogg    "$OGG_VERSION"    build_ogg ;;
     vorbis)  lib vorbis "$VORBIS_VERSION" build_vorbis ;;
     opus)    lib opus   "$OPUS_VERSION"   build_opus ;;

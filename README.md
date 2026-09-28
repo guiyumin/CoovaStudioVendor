@@ -20,7 +20,8 @@ from upstream sources.
 - Runs on macOS 12 and newer.
 - GPL build (x264 and x265 included), with no nonfree components (no fdk-aac).
 
-The first version includes x264, x265 (8-bit), libvpx, dav1d, opus, libogg + libvorbis and lame.
+The first version includes x264, x265 (8-bit), libvpx, dav1d, opus, libogg + libvorbis and lame;
+SVT-AV1 (AV1 encoding) joined in `ffmpeg-9.0.1-2`.
 Hardware encoding and decoding use the system's VideoToolbox; AAC uses ffmpeg's built-in encoder.
 
 ### Building locally
