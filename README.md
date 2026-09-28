@@ -17,6 +17,10 @@ from upstream sources.
   changing only that block.
 - All third-party libraries are linked statically. The binaries depend only on libraries and
   frameworks that ship with macOS, and the script verifies that with `otool -L`.
+- `ffprobe` is built on its own: the same decoders and demuxers as `ffmpeg`, but no encoders, no
+  muxers and none of the encoder-only libraries (x264, x265, SVT-AV1, LAME), which static linking
+  would otherwise put into it too. It only reads files, so it is about half the size. The check
+  step makes sure both decode exactly the same codecs.
 - Runs on macOS 12 and newer.
 - GPL build (x264 and x265 included), with no nonfree components (no fdk-aac).
 

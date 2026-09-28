@@ -2,7 +2,7 @@
 # Builds static ffmpeg + ffprobe for macOS (Apple silicon) from pinned upstream sources.
 #
 #   ffmpeg/build.sh          # everything: fetch, build every library, build ffmpeg, check, package
-#   ffmpeg/build.sh x265     # a single step: fetch x264 x265 libvpx dav1d svtav1 ogg vorbis opus lame ffmpeg check package
+#   ffmpeg/build.sh x265     # a single step: fetch x264 x265 libvpx dav1d svtav1 ogg vorbis opus lame ffmpeg ffprobe check package
 #
 # Output goes to dist/ffmpeg/ (see README.md); intermediate files live in work/ffmpeg/.
 # Everything below the "pinned versions" block is mechanism. To upgrade anything, only that block changes.
@@ -72,7 +72,8 @@ export LDFLAGS="-arch $ARCH -mmacosx-version-min=$MACOS_MIN -L$PREFIX/lib"
 export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
 unset PKG_CONFIG_PATH
 
-FFMPEG_CONFIGURE=(
+# Shared by the two builds: everything that reads and decodes.
+FFMPEG_COMMON=(
   --prefix="$OUT"
   --arch="$ARCH" --cc=clang
   --enable-gpl
@@ -80,11 +81,23 @@ FFMPEG_CONFIGURE=(
   --pkg-config-flags=--static
   --extra-cflags="-I$PREFIX/include"
   --extra-ldflags="-L$PREFIX/lib"
-  --extra-libs=-lc++ # x265 is C++
-  --enable-libx264 --enable-libx265 --enable-libvpx --enable-libdav1d --enable-libsvtav1
-  --enable-libopus --enable-libvorbis --enable-libmp3lame
+  --enable-libvpx --enable-libdav1d --enable-libopus --enable-libvorbis
   --enable-videotoolbox --enable-audiotoolbox
   --disable-sdl2 --disable-ffplay --disable-doc --disable-debug
+)
+# ffmpeg: all of it, the encoders and the libraries that only encode included.
+FFMPEG_CONFIGURE=(
+  "${FFMPEG_COMMON[@]}"
+  --extra-libs=-lc++ # x265 is C++
+  --enable-libx264 --enable-libx265 --enable-libsvtav1 --enable-libmp3lame
+  --disable-ffprobe
+)
+# ffprobe only reads: the same decoders and demuxers, but no encoders, no muxers and none of the
+# encoder-only libraries, which static linking would otherwise put into it too (a third its size).
+FFPROBE_CONFIGURE=(
+  "${FFMPEG_COMMON[@]}"
+  --disable-ffmpeg
+  --disable-encoders --disable-muxers
 )
 
 # ---- helpers ---------------------------------------------------------------------------
@@ -143,9 +156,9 @@ run_logged() { # name function
   if [ "$status" -ne 0 ]; then
     echo "--- $name failed (exit $status); last 60 lines of $LOGS/$name.log ---" >&2
     tail -60 "$LOGS/$name.log" >&2
-    if [ "$name" = ffmpeg ] && [ -f "$SRC/ffmpeg/ffbuild/config.log" ]; then
+    if [ -f "$WORK/build-$name/ffbuild/config.log" ]; then
       echo "--- last 40 lines of ffbuild/config.log ---" >&2
-      tail -40 "$SRC/ffmpeg/ffbuild/config.log" >&2
+      tail -40 "$WORK/build-$name/ffbuild/config.log" >&2
     fi
     exit 1
   fi
@@ -280,12 +293,28 @@ build_lame() {
   make install
 }
 
+# Both are built outside the source tree, each in a folder of its own.
 build_ffmpeg() {
-  cd "$SRC/ffmpeg"
-  rm -rf "$OUT"
-  ./configure "${FFMPEG_CONFIGURE[@]}"
+  rm -rf "$OUT" "$WORK/build-ffmpeg"
+  mkdir -p "$WORK/build-ffmpeg"
+  cd "$WORK/build-ffmpeg"
+  "$SRC/ffmpeg/configure" "${FFMPEG_CONFIGURE[@]}"
   make -j"$JOBS"
   make install
+}
+
+build_ffprobe() {
+  rm -rf "$WORK/build-ffprobe"
+  mkdir -p "$WORK/build-ffprobe"
+  cd "$WORK/build-ffprobe"
+  "$SRC/ffmpeg/configure" "${FFPROBE_CONFIGURE[@]}"
+  make -j"$JOBS"
+  install -m 755 ffprobe "$OUT/bin/ffprobe"
+}
+
+# What a program decodes: its list of decoders, as `ffmpeg -decoders` prints it.
+decoder_list() {
+  "$1" -hide_banner -decoders 2>/dev/null | awk 'seen { print } /^ ------/ { seen = 1 }'
 }
 
 step_check() {
@@ -312,6 +341,15 @@ $bad"
   done
   grep -q 'yuv420p10le.*yuv420p12le' <<<"$x265" || die "libx265 takes no 10- and 12-bit pictures"
   echo "  all expected encoders and decoders present"
+  # ffprobe has no encoders, and exactly ffmpeg's decoders: the app asks ffprobe what ffmpeg can
+  # decode.
+  local probe_encoders
+  probe_encoders=$("$OUT/bin/ffprobe" -hide_banner -encoders 2>/dev/null | awk 'seen { print } /^ ------/ { seen = 1 }')
+  [ -z "$probe_encoders" ] || die "ffprobe has encoders:
+$probe_encoders"
+  diff <(decoder_list "$OUT/bin/ffmpeg") <(decoder_list "$OUT/bin/ffprobe") >&2 \
+    || die "ffprobe does not decode exactly what ffmpeg decodes (above: < ffmpeg, > ffprobe)"
+  printf '  ffprobe: no encoders, the same %s decoders as ffmpeg\n' "$(decoder_list "$OUT/bin/ffprobe" | wc -l | tr -d ' ')"
   # Smoke test: one second of test video + tone through x264/aac, probe it, then x265 (8, 10 and
   # 12 bits), vp9, av1, mp3 and opus.
   tmp=$(mktemp -d)
@@ -348,8 +386,13 @@ libraries (all statically linked):
   lame     $LAME_VERSION
   VideoToolbox / AudioToolbox from the macOS SDK
 
-configure:
+ffprobe is built on its own, with ffmpeg's decoders and demuxers but no encoders or muxers.
+
+configure (ffmpeg):
   ./configure ${FFMPEG_CONFIGURE[*]}
+
+configure (ffprobe):
+  ./configure ${FFPROBE_CONFIGURE[*]}
 INFO
 }
 
@@ -376,7 +419,7 @@ step_package() {
 
 # ---- main --------------------------------------------------------------------------------
 
-ALL_STEPS="fetch x264 x265 libvpx dav1d svtav1 ogg vorbis opus lame ffmpeg check package"
+ALL_STEPS="fetch x264 x265 libvpx dav1d svtav1 ogg vorbis opus lame ffmpeg ffprobe check package"
 for step in ${*:-$ALL_STEPS}; do
   case $step in
     fetch)   step_fetch ;;
@@ -390,6 +433,7 @@ for step in ${*:-$ALL_STEPS}; do
     opus)    lib opus   "$OPUS_VERSION"   build_opus ;;
     lame)    lib lame   "$LAME_VERSION"   build_lame ;;
     ffmpeg)  run_logged ffmpeg build_ffmpeg ;;
+    ffprobe) run_logged ffprobe build_ffprobe ;;
     check)   step_check ;;
     package) step_package ;;
     *) die "unknown step: $step (valid: $ALL_STEPS)" ;;
